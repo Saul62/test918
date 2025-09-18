@@ -7,30 +7,30 @@ import matplotlib.pyplot as plt
 import warnings
 import sys
 
-# Suppress noisy warnings
+# 忽略常见的无关警告
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
-# NumPy compatibility for deprecated np.bool in some stacks
+# 兼容某些环境里已弃用的 np.bool
 if not hasattr(np, 'bool'):
     np.bool = bool
 
-# Page config
+# 页面配置
 st.set_page_config(
     page_title="LASI Multimorbidity Prediction (Random Forest)",
     page_icon="🩺",
     layout="wide"
 )
 
-# Features used by the trained model (order matters)
+# 训练模型使用的特征（顺序必须与训练一致）
 FEATURES = [
     "self_rate_health", "BMI", "working_status",
     "adl", "urbanrural", "marriage", "age",
     "ph_activities", "pain", "household_income", "score"
 ]
 
-# English labels and descriptions
+# 英文显示标签（仅影响界面显示，不影响编码）
 FEATURE_LABELS = {
     "self_rate_health": "Self-rated Health",
     "BMI": "BMI Tier",
@@ -45,6 +45,7 @@ FEATURE_LABELS = {
     "score": "Cognitive Score (normalized)",
 }
 
+# 字段说明（侧栏说明文字）
 FEATURE_DESC = {
     "self_rate_health": "Likert 1–5: Very poor/Poor/Fair/Good/Excellent (encoded 1–5)",
     "BMI": "0/1/2 map to Low/Medium/High",
@@ -59,7 +60,7 @@ FEATURE_DESC = {
     "score": "Model expects normalized [0,1]; the app converts raw score to normalized",
 }
 
-# Option sets and formatters
+# 选项集合与显示格式化函数
 YES_NO_OPTIONS = [0, 1]
 YES_NO_FMT = lambda x: "No" if x == 0 else "Yes"
 
@@ -73,7 +74,7 @@ INCOME_OPTIONS = [0, 1, 2, 3]
 INCOME_FMT = lambda x: {0: "Low", 1: "Lower-middle", 2: "Upper-middle", 3: "High"}[x]
 
 
-# Load model with numpy._core fallback compatibility for some environments
+# 加载模型；为部分环境提供 numpy._core 兼容兜底
 @st.cache_resource
 def load_model():
     model_path = 'lasi_result.pkl'
@@ -100,11 +101,12 @@ def main():
         "- Cognitive score (score) is entered as a raw value and normalized internally."
     )
 
+    # 侧栏：展开的“特征与说明”
     with st.sidebar.expander("Features & Notes"):
         for k in FEATURES:
             st.markdown(f"- {FEATURE_LABELS.get(k,k)}: {FEATURE_DESC.get(k,'')}")
 
-    # Fixed raw score range for normalization (hidden from UI)
+    # 归一化用的原始分值范围（固定值；UI 不展示）
     SCORE_RAW_MIN = 0
     SCORE_RAW_MAX = 39
 
@@ -116,9 +118,11 @@ def main():
         st.sidebar.error(f"Failed to load model: {e}")
         return
 
+    # 页面标题与说明
     st.title("LASI Multimorbidity Risk Prediction")
     st.markdown("Enter the inputs below and click Predict.")
 
+    # 三列布局：分组输入控件
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -156,6 +160,7 @@ def main():
         household_income = st.selectbox(
             FEATURE_LABELS['household_income'], INCOME_OPTIONS, format_func=INCOME_FMT
         )
+        # 认知原始分值（滑块输入）
         score_raw = st.slider(
             "Cognitive score (raw)",
             min_value=int(SCORE_RAW_MIN),
@@ -163,11 +168,11 @@ def main():
             value=int((SCORE_RAW_MIN + SCORE_RAW_MAX) // 2),
             step=1,
         )
-        # Normalize to [0,1]
+        # 转为 [0,1] 的归一化分值
         score_norm = (score_raw - SCORE_RAW_MIN) / (SCORE_RAW_MAX - SCORE_RAW_MIN)
 
     if st.button("Predict"):
-        # Assemble input in the exact training order
+        # 按训练顺序组装输入行
         row = [
             self_rate_health, BMI, working_status,
             adl, urbanrural, marriage, age,
@@ -182,18 +187,18 @@ def main():
             st.error(f"Prediction failed: {e}")
             return
 
-        # Minimal text only; no tables or extra charts
+        # 最小化文字，仅提示预测类别与概率
         st.subheader("Prediction Result")
         st.markdown(f"Predicted: {'Yes' if pred==1 else 'No'} (multimorbidity).  Probabilities – No: {proba[0]:.4f}, Yes: {proba[1]:.4f}")
 
-        # SHAP explainability
+        # SHAP 可解释性（仅保留 Force Plot）
         st.write("---")
         st.subheader("Explainability (SHAP)")
         try:
             explainer = shap.TreeExplainer(model)
             sv = explainer.shap_values(input_df)
 
-            # Handle different SHAP return formats
+            # 兼容不同 shap 版本的返回格式
             if isinstance(sv, list):
                 shap_value = np.array(sv[1][0])  # class 1 contribution
                 expected_value = explainer.expected_value[1] if isinstance(explainer.expected_value, list) else explainer.expected_value
@@ -206,26 +211,7 @@ def main():
             else:
                 raise RuntimeError("Unrecognized SHAP output format")
 
-            # Waterfall plot
-            try:
-                fig = plt.figure(figsize=(10, 7))
-                shap.waterfall_plot(
-                    shap.Explanation(
-                        values=shap_value,
-                        base_values=expected_value,
-                        data=input_df.iloc[0].values,
-                        feature_names=[FEATURE_LABELS.get(f, f) for f in FEATURES]
-                    ),
-                    max_display=11,
-                    show=False
-                )
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close(fig)
-            except Exception as e:
-                st.error(f"Waterfall plot failed: {e}")
-
-            # Force plot
+            # 力导向图（Force Plot）
             try:
                 force_plot = shap.force_plot(
                     expected_value,
@@ -242,7 +228,7 @@ def main():
         except Exception as e:
             st.warning(f"Could not generate SHAP explanation: {e}")
 
-        # No other tables/plots required
+        # 其余图表已按需移除
 
 
 if __name__ == "__main__":
